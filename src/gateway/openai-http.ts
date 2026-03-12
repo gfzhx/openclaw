@@ -442,44 +442,9 @@ export async function handleOpenAiHttpRequest(
   });
   const activeTurnContext = resolveActiveTurnContext(payload.messages);
   const prompt = buildAgentPrompt(payload.messages, activeTurnContext.activeUserMessageIndex);
-  let images: ImageContent[] = [];
-  try {
-    images = await resolveImagesForRequest(activeTurnContext, limits);
-  } catch (err) {
-    logWarn(`openai-compat: invalid image_url content: ${String(err)}`);
-    sendJson(res, 400, {
-      error: {
-        message: "Invalid image_url content in `messages`.",
-        type: "invalid_request_error",
-      },
-    });
-    return true;
-  }
 
-  if (!prompt.message && images.length === 0) {
-    sendJson(res, 400, {
-      error: {
-        message: "Missing user message in `messages`.",
-        type: "invalid_request_error",
-      },
-    });
-    return true;
-  }
-
+  // Run registered dispatch interceptors before media resolution (fail-fast).
   const runId = `chatcmpl_${randomUUID()}`;
-  const deps = createDefaultDeps();
-  const commandInput = buildAgentCommandInput({
-    prompt: {
-      message: prompt.message,
-      extraSystemPrompt: prompt.extraSystemPrompt,
-      images: images.length > 0 ? images : undefined,
-    },
-    sessionKey,
-    runId,
-    messageChannel,
-  });
-
-  // Run registered dispatch interceptors before starting the Agent.
   const pluginRegistry = getGlobalPluginRegistry();
   if (pluginRegistry && pluginRegistry.dispatchInterceptors.length > 0) {
     try {
@@ -553,6 +518,42 @@ export async function handleOpenAiHttpRequest(
       return true;
     }
   }
+
+  let images: ImageContent[] = [];
+  try {
+    images = await resolveImagesForRequest(activeTurnContext, limits);
+  } catch (err) {
+    logWarn(`openai-compat: invalid image_url content: ${String(err)}`);
+    sendJson(res, 400, {
+      error: {
+        message: "Invalid image_url content in `messages`.",
+        type: "invalid_request_error",
+      },
+    });
+    return true;
+  }
+
+  if (!prompt.message && images.length === 0) {
+    sendJson(res, 400, {
+      error: {
+        message: "Missing user message in `messages`.",
+        type: "invalid_request_error",
+      },
+    });
+    return true;
+  }
+
+  const deps = createDefaultDeps();
+  const commandInput = buildAgentCommandInput({
+    prompt: {
+      message: prompt.message,
+      extraSystemPrompt: prompt.extraSystemPrompt,
+      images: images.length > 0 ? images : undefined,
+    },
+    sessionKey,
+    runId,
+    messageChannel,
+  });
 
   if (!stream) {
     try {

@@ -351,42 +351,65 @@ export async function dispatchReplyFromConfig(params: {
             : typeof ctx.RawBody === "string"
               ? ctx.RawBody
               : "";
-        const { intercepted } = await interceptor.intercept(
-          body,
-          {
-            sessionKey: ctx.SessionKey,
-            channelId: ctx.Surface ?? ctx.Provider ?? undefined,
-            userId: ctx.From ?? undefined,
-          },
-          {
-            sendBlock: (message: string) => {
-              const payload: ReplyPayload = { text: message };
-              if (shouldRouteToOriginating && originatingChannel && originatingTo) {
-                fireAndForgetHook(
-                  sendPayloadAsync(payload),
-                  "dispatch-from-config: interceptor route-reply failed",
-                );
-              } else {
-                dispatcher.sendFinalReply(payload);
-              }
+        let outputSent = false;
+        let intercepted = false;
+        try {
+          const result = await interceptor.intercept(
+            body,
+            {
+              sessionKey: ctx.SessionKey,
+              channelId: ctx.Surface ?? ctx.Provider ?? undefined,
+              userId: ctx.From ?? undefined,
             },
-            sendStreamChunk: (text: string) => {
-              const payload: ReplyPayload = { text };
-              if (shouldRouteToOriginating) {
-                fireAndForgetHook(
-                  sendPayloadAsync(payload),
-                  "dispatch-from-config: interceptor stream route-reply failed",
-                );
-              } else {
-                dispatcher.sendBlockReply(payload);
-              }
+            {
+              sendBlock: (message: string) => {
+                outputSent = true;
+                const payload: ReplyPayload = { text: message };
+                if (shouldRouteToOriginating && originatingChannel && originatingTo) {
+                  fireAndForgetHook(
+                    sendPayloadAsync(payload),
+                    "dispatch-from-config: interceptor route-reply failed",
+                  );
+                } else {
+                  dispatcher.sendFinalReply(payload);
+                }
+              },
+              sendStreamChunk: (text: string) => {
+                outputSent = true;
+                const payload: ReplyPayload = { text };
+                if (shouldRouteToOriginating) {
+                  fireAndForgetHook(
+                    sendPayloadAsync(payload),
+                    "dispatch-from-config: interceptor stream route-reply failed",
+                  );
+                } else {
+                  dispatcher.sendBlockReply(payload);
+                }
+              },
+              sendStreamDone: () => {
+                // No-op: streaming completion is signaled by the intercepted return value.
+              },
             },
-            sendStreamDone: () => {
-              // No-op: streaming completion is signaled by the intercepted return value.
-            },
-          },
-        );
+          );
+          intercepted = result.intercepted;
+        } catch (err) {
+          logVerbose(`dispatch-from-config: interceptor failed: ${String(err)}`);
+          // Treat interceptor failure as non-intercepted so the message is still delivered.
+          continue;
+        }
         if (intercepted) {
+          // Send a default block message if the interceptor did not emit any output.
+          if (!outputSent) {
+            const fallback: ReplyPayload = { text: "Request intercepted." };
+            if (shouldRouteToOriginating && originatingChannel && originatingTo) {
+              fireAndForgetHook(
+                sendPayloadAsync(fallback),
+                "dispatch-from-config: interceptor fallback route-reply failed",
+              );
+            } else {
+              dispatcher.sendFinalReply(fallback);
+            }
+          }
           recordProcessed("completed", { reason: "dispatch_interceptor" });
           markIdle("message_completed");
           return { queuedFinal: true, counts: dispatcher.getQueuedCounts() };
